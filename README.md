@@ -1,4 +1,4 @@
-# AR1-Differentiating-Time-Varying-Cells
+# AR1-Time-Varying-Cells
 ### Data from a Randomized Experiment: Differentiating Cells with Time-Varying Characteristics
 
 --------------
