@@ -1,5 +1,11 @@
 # Time-Varying-Cells
+Case Studies
+Final Project
+
 Data from a Randomized Experiment: Differentiating Cells with Time-Varying Characteristics
+--------------
+Report
+
 ![FINAL REPORT_page-0001](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/7a26c8ca-af89-4181-aa4a-83c59739aa70)
 ![FINAL REPORT_page-0002](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/1fdcd460-45f7-4324-a9c3-01c8fc1f5ec9)
 ![FINAL REPORT_page-0003](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/d7f3ee9b-0e48-4e6a-85ed-fbb73789f25b)
