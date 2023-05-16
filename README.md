@@ -84,5 +84,12 @@ Appendix
 ![FINAL APPENDIX_page-0054](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/42022bd7-5337-441a-8bca-f1fb6eb2be8e)
 ![FINAL APPENDIX_page-0055](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/61e4938b-6328-49a9-aa5b-3d86db565dc7)
 ![FINAL APPENDIX_page-0056](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/ca390b75-7361-40b7-8e6b-9de2984ec07f)
-
+![FINAL APPENDIX_page-0057](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/c46213c5-4f12-4897-908f-efad83f60ba5)
+![FINAL APPENDIX_page-0058](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/bdffce60-13a9-4001-ba5b-7a7e6a1d4644)
+![FINAL APPENDIX_page-0059](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/928b131a-d1bc-49ec-b02f-58debdf2f22c)
+![FINAL APPENDIX_page-0060](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/e5bc399a-8bda-4f75-9062-32bc10d762d5)
+![FINAL APPENDIX_page-0061](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/f7ea7a2c-ffca-4c1b-888f-a2eed86ee3af)
+![FINAL APPENDIX_page-0062](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/04f4720a-56a4-4eb6-97d2-3ff9ddb2576b)
+![FINAL APPENDIX_page-0063](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/ae29ef4a-c826-4794-805d-189b9df8a2a9)
+![FINAL APPENDIX_page-0064](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/8175e989-20e1-443f-b0e2-f4fbe12e5629)
 
