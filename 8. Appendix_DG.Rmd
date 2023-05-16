@@ -1,0 +1,1601 @@
+---
+header-includes:
+   - \usepackage{soul}
+   - \usepackage{color}
+   - \usepackage{fancyhdr}
+   - \usepackage{lipsum}
+title: |
+  | **Appendix** | 7a: All Spikes, Long Stimulation Data
+subtitle: |
+  |
+  | *Supplementary code appendix to final project submission* 
+  | *prepared for S&DS 625 (Statistical Case Studies)*
+  | *and the lab of Dr. Erdem Karatekin at Yale University* 
+author: "Dipika Gawande"
+date: "14 December 2022"
+output: pdf_document
+fontsize: 10pt
+toc: true
+number_sections: true
+knit: (function(inputFile, encoding) { 
+  rmarkdown::render(inputFile,
+  encoding=encoding, 
+  output_file=file.path('iv. PDF Knits', '8. Appendix_DG_v2')) 
+  })
+---
+
+\maketitle
+
+\sffamily
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\leftmark}
+\fancyhead[R]{\rightmark}
+\lfoot{Appendix | 7a: All Spikes, Long Stimulation}
+
+
+# 1) Setup
+
+* **Setup R environment and packages**
+
+```{r setup, message=FALSE}
+
+## Options
+knitr::opts_chunk$set(echo = TRUE)
+options(digits.secs=5)
+
+## Import packages
+library(readxl)
+library(tidyverse)
+library(dplyr)
+# For ease of plotting
+library(ggplot2)
+library(ggpubr)
+# To create lag vars in time series
+library(Hmisc)
+# For unit root test
+library(urca)
+# For robust standard errors in OLS regression
+library(estimatr)
+# For regression tables
+library(stargazer)
+# For cross-validation and test error
+library(caret)
+```
+
+
+------------------
+
+* **Read in merged data**
+
+Erdem mentioned we should ignore the Rise and Fall vars as they are not
+precisely measured; units are uncertain. He also mentioned that `Tbase`
+should be ignored. Exclude these vars from initial pairs plot. Note g/V vars 
+are not present in this data set. 
+
+```{r Read in data}
+## Read in the data
+df = read.csv("ii. Working Data/AllSpikes_LongStim_Merged.csv", 
+              stringsAsFactors = FALSE)
+names(df)
+```
+
+# 2) Exploratory analysis
+
+Start with a pairs plot (only on Wild Type cells) to see the relationships of 
+variables at a glance. Look for curving or expanding patterns in any of the 
+pairs plots that suggest we should log transform the variables before analysis.
+
+## 2a) Pairs plot (Wild Type only)
+
+Focusing initial attention on non-PSF vars, aka characteristics
+of the main spike. Per Erdem's notes, could looking at PSF in this 
+`All spikes` data set be "confounding/noisy" since there is overlap of 
+many spikes in this file? PSF is inherently a small bump. Even after Erdem's
+baseline noise correction, is PSF data in this file somehow misleading (maybe 
+end foot of previous spike overlaps with PSF of current spike, etc...)? 
+We will focus our analysis on the main spike characteristics.
+
+```{r Pairs plot (WT only)}
+## Pairs plot for WT cells only
+pairs(pch=19, cex=0.3, las = 1,
+      df[df$Cell.Type %in% ("WT"),
+         !names(df) %in% c("Cell.Type", "CellID", "Tbase_ms",
+                           "Rise2575_ms", "Rise_pAms", "Fall7525_ms", 
+                           "FallTau1_ms","FallTau2_ms", "Qpsf_pC")])
+```
+
+## 2b) Preparation of vars
+
+* **First:** Several vars have expanding or curved relationships. Log transform 
+these.
+
+```{r Log transform vars}
+## Log transform key variables
+df$log_Imax = log(df$Imax_A)
+df$log_t12 = log(df$t12_ms)
+## Transforming Q (Coulombs) produces NaNs. Per Jay's suggestion, add the min
+## positive value of Q_C to every obs before taking the log. 
+## Note: There are 2 negative values in this var. Coulombs can be negative but
+## integral under the curve cannot be. Mentioned these to Erdem.
+Q_sorted <- sort(df$Q_C)
+#min_pos_Q <- nth(Q_sorted, 3)
+Q_buffer <- df$Q_C + (4 * 10^(-15))
+## Now take the log of Q
+df$log_Q = log(Q_buffer)
+
+## Pairs plot with transformed vars:
+pairs(pch=19, cex=0.2, las = 1,
+      df[df$Cell.Type %in% ("WT"), 
+         !names(df) %in% c("Cell.Type", "CellID", "Tbase_ms",
+                           "Imax_A", "Q_C", "Tbase_ms", "t12_ms",
+                           "Rise2575_ms", "Rise_pAms", "Fall7525_ms",
+                           "FallTau1_ms","FallTau2_ms", "Qpsf_pC")])
+```
+
+------------------
+
+* **Next:** Create a new variable `Wait_time`. Do some cleanup of the data.
+
+Two cells have spikes marked with a likely incorrect group label (see 
+comments in chunk below.) To be safe we will drop these spikes rather than 
+re-labeling them. Clean up and shorten the data frame to only the key vars 
+highlighted by Erdem.
+
+\fcolorbox{gray!40}{gray!40}{Rationale:} Per Erdem's notes, the `All spikes` 
+data contain "all spikes detected by the program, maybe adjusted for baseline, 
+but includes overlapping spikes we excluded from the analyses of spike features. 
+Use this one for looking at statistics of inter-spike waiting times." 
+\textcolor{blue}{Since inter-spike waiting times are of explicit interest,} 
+\textcolor{blue}{create a variable called} `Wait_time` 
+\textcolor{blue}{which is the difference in} `Max_s` 
+\textcolor{blue}{between successive spikes from the same cell:}
+
+* `Wait_time`$_{t,c}$ = `Max_s`$_{t,c}$ -- `Max_s`$_{t-1, c}$. 
+* This variable is the waiting time (in seconds) between Spike$_t$ and 
+Spike$_{t-1}$ from Cell $c$. Note that `Max_s`$_{t,c}$ denotes the time at 
+which the maximum of Spike$_t$ from Cell $c$ occurred.
+
+```{r Clean-up and short df, message = FALSE}
+
+## Make df_short, the data frame with key vars which we will use for all
+## analysis henceforth
+df_short <- df %>%
+  select(-c("Imax_A", "Q_C", "Tbase_ms", "t12_ms",
+            "Rise2575_ms", "Rise_pAms", "Fall7525_ms", 
+            "FallTau1_ms","FallTau2_ms", "Qpsf_pC",
+            "Ipsf_A", "tpsf_ms", "Qpsf_C")) %>%
+  group_by(CellID) %>%
+  mutate(nspikes = n()) %>%
+  relocate(nspikes, .after = CellID) %>%
+  ## Create new var waiting time between spikes (by Cell ID)
+  arrange(CellID, Max_s) %>%
+  mutate(Wait_time = Max_s - lag(Max_s, default = Max_s[1])) %>%
+  ungroup() %>%
+  ## See notes below, remove 1 row for now
+  filter(!(CellID == "MT211123c4" & Cell.Type == "K189")) %>%
+  ## See notes below, remove 2 rows for now
+  filter(!(CellID == "MT211122c1" & Cell.Type == "WT"))
+
+## Cell ID MT211123c4 (292 spikes) has one observation marked as K189, but all
+## other obs are K326. Dropping the K189 obs for now instead of changing that
+## label to K326 because the PSF values look off. This should be confirmed
+## with Erdem. Same with Cell ID MT211122c1 (72 spikes) has 2 observations 
+## marked as WT, but all other obs are K189. Dropping the 2 obs for same reason.
+
+write.csv(df_short, 
+          file = "ii. Working Data/AllSpikes_LongStim_df_short.csv", 
+          row.names = FALSE)
+
+## Summary table of cells and number of spikes from each. This is the sample we 
+## will work with for all analysis of this data set.
+table <- df_short %>%
+  group_by(CellID, Cell.Type) %>%
+  summarise(n = n()) %>%
+  arrange(Cell.Type, n)
+knitr::kable(table, caption = "Total spikes in the All spikes, long 
+             stimulation data", 'pandoc')
+
+## Our sample is now 59 cells total.
+summary <- table %>%
+  group_by(Cell.Type) %>%
+  summarise(n = n())
+knitr::kable(summary, caption = "Total cells in the All spikes, long 
+             stimulation data", 'pandoc')
+
+```
+
+------------------
+
+## 2c) Boxplots of variables by Cell ID for each group
+
+\fcolorbox{gray!40}{gray!40}{Rationale:} Each data point is a measurement of 
+serotonin release (spike) from a cell, and multiple spikes come from the same 
+cell during the same observation period. Lack of independent degrees of freedom 
+makes apparent variation in scatter plots misleading. So, let's look at the 
+distribution of each variable by Cell ID. We suspect that within-cell 
+measurements (spikes) may be dependent observations so we show their 
+distribution with a boxplot. We know that each cell (`CellID`) is an 
+independent experiment. 
+
+Note: Number of observations per cell range from 2 to 209.
+
+```{r Boxplot one var by cell ID, fig.height = 4.5, fig.width=12}
+
+## Set color vector for all plots in this report
+colors <- c("goldenrod", "firebrick3", "grey30")
+
+## Plot the distribution of each variable by Cell ID. Facet by Cell Type.
+## Write a function that makes the boxplot then lapply. 
+boxplot_func <- function(var) {
+  
+  p <- ggplot(df_short, aes(y = unlist(df_short[, var]))) +
+    geom_boxplot(aes(x = CellID, color = Cell.Type), size = 0.6) +
+    ylab(var) +
+    facet_grid(. ~ Cell.Type, scales = "free") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, vjust = 0.5, size = 7)) +
+    scale_color_manual(values = colors)
+  
+  return(p)
+}
+
+lapply(names(df_short), boxplot_func)[4:8]
+
+```
+
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][0.5cm][t]{16.2cm}
+
+Observations: We see a good amount of within-cell variation for most of the
+variables. Lets check for difference in the means across groups.
+
+\end{minipage}}
+
+
+------------------
+
+# 3) Analysis of cell "fixed-effects"
+
+\fcolorbox{gray!40}{gray!40}{Rationale:} Since we suspect that within-cell 
+measurements may not be independent, start our analysis by looking at summary 
+versions of the key vars `log_Imax`, `log_t12` and `log_Q` and `Wait_time` at 
+the level of the cell. We will exclude `Max_s`, since this is our time variable 
+(and the other four spike characteristic variables vary with time.) 
+
+Taking the mean of a variable gives the cell "fixed-effect" for that variable. 
+Analyzing the cell fixed-effect of these variables greatly reduces the degrees 
+of freedom from number of spikes (which we suspect are not independent) to 
+the number of cells (which are independent experiments).
+
+Plot the distributions of the cell mean (fixed-effect) by treatment group. 
+Distributions of cell-level IQR, 95th and 99th percentile were also plotted
+by group, but no obvious difference in the between-group distributions was
+visible.
+
+## 3a) Density of cell fixed-effect by group
+
+```{r Cell fixed-effects, message=FALSE, warning = FALSE}
+
+the_vars <- c("log_Imax", "log_t12", "log_Q", "Wait_time")
+
+## Make df with summary vars at the level of Cell ID
+df_cellwise <- df_short %>%
+  group_by(CellID) %>%
+  mutate(across(all_of(the_vars), mean, .names = "mean_{the_vars}"),
+         across(all_of(the_vars), IQR, .names = "iqr_{the_vars}"),
+         across(all_of(the_vars), ~quantile(., 0.95), .names = "p95_{the_vars}"),
+         across(all_of(the_vars), ~quantile(., 0.99), .names = "p99_{the_vars}"))
+
+## Make function that plots multi-histogram and overlaid kernel density 
+## for cell-level summary vars, by Cell Type.
+plot_multi_hist <- function(df, feature, label_column) {
+    p <- ggplot(df, aes(x = eval(parse(text = feature)), 
+                      fill = eval(parse(text = label_column)))) +
+    geom_histogram(aes(y = after_stat(density)), alpha = 0.25, color = "white", 
+                   linewidth = 0.2, position = "identity") +
+    geom_density(alpha = 0.85, color = "black", linewidth = 0.2) +
+    scale_fill_manual(labels = c("K189 (n=19 cells)", 
+                                 "K326 (n=19 cells)",
+                                 "WT (n=20 cells)"),
+                      values = colors) +
+    labs(x = feature, y = "Density", 
+         title = paste("Distribution of cell", feature, 
+                       "across three groups", "\n(n=59 cells)")) +
+    theme_minimal() +
+    theme(text = element_text(size = 7),
+          plot.title = element_text(size = 7),
+          legend.key.size = unit(4, 'mm'))
+    p + guides(fill = guide_legend(title = label_column))
+}
+
+```
+
+* **Plot density of cell fixed-effect (cell mean for all vars) by group**
+
+```{r Plot cell fixed effects, fig.height=1.7, fig.width=5, message=FALSE}
+
+## Plot density of cell fixed effects (cell-mean of all vars)
+mean_vars <- grep("(mean).*", colnames(df_cellwise), value = T)
+lapply(mean_vars, function(i) plot_multi_hist(df_cellwise, i, "Cell.Type"))
+
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1cm][t]{16.2cm}
+
+Observations: Distribution of cell fixed-effects (the cell mean of each 
+variable) appear to be roughly bi-modal and quite similar across treatment 
+groups. We will test for equality of means between control and treatment groups 
+using ANOVA in the next section.
+
+\end{minipage}}
+
+------------------
+
+## 3b) ANOVA of cell fixed-effects ($df = 39$)
+
+\fcolorbox{gray!40}{gray!40}{Rationale:} Until we test the dependency of 
+within-cell observations in the next section, let's see if an ANOVA of fixed-
+effects shows a significant difference in the cell-level means of any of 
+our 4 key variables. Do ANOVA for two groups at a time: WT versus K189 and 
+then WT versus K326 (All our tests for difference of means will be done for 
+separately for wild type versus each treatment group).
+
+This ANOVA is very conservative, utilizing only ~20 independent degrees of 
+freedom per group (the number of cells). Essentially assuming that all 
+within-cell observations are dependent, we are testing for a between-group 
+difference in cell fixed-effects.
+
+```{r Conservative ANOVA of cell-level means (40 df), message=FALSE}
+
+## Do ANOVA using row IDs for just two groups at a time. Since we are using mean
+## vars at the level of the cell, we have only 40-1 degrees of freedom for each 
+## test (21 WT cell mean values and 19 mutant cell mean values).
+
+## Make df of cell-level means
+df_ftest <- df_short %>%
+  group_by(CellID, Cell.Type) %>%
+  summarise(n = n(), across(the_vars, mean))
+
+## Write a function that maps through the cell-level mean vars and carries
+## out an ANOVA of cell fixed-effects
+aov_fe_func <- function(row_idx) {
+  df_ftest[row_idx, the_vars] %>%
+    map(~ summary(aov(. ~ df_ftest$Cell.Type[row_idx])))
+}
+
+## Fixed-effects ANOVA for WT versus K189. Assume equal variances for
+## easier interpretability
+WT_and_K189 <- which(df_ftest$Cell.Type %in% c("WT", "K189"))
+aov_fe_func(WT_and_K189)
+
+## Fixed-effects ANOVA for WT versus K326. Assume equal variances for 
+## easier interpretability
+WT_and_K326 <- which(df_ftest$Cell.Type %in% c("WT", "K326"))
+aov_fe_func(WT_and_K326)
+
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][2.5cm][t]{16.2cm}
+
+Observations: We are able to reject equality of means of cell fixed-effect for 
+$\bf log\_t12$ and $\bf log\_Q$ between WT and K189 cells at the 1\% level. 
+The test rejects equality of means of cell fixed-effect for $\bf log\_t12$
+between WT and K326 cells at the 5\% level. For all other variables, the cell 
+fixed-effects do not significantly differ between WT and K189, nor between 
+WT and K326 cells. The significant difference in control and treatment cell
+fixed-effect for log spike-width and log Q is notable given the conservative 
+degrees of freedom in this test.
+
+\end{minipage}}
+
+------------------
+
+# 4) AR(1) analysis of within-cell measurements
+
+The process that produces the spikes in the data is a cell producing product 
+and releasing it in spurts over time. It is therefore natural to assume that 
+the characteristics of one release spike may be dependent on the spike or 
+spikes before it; the spikes from one cell comprise a time-series. In this 
+analysis we model this dependent process as a simple autoregressive AR(1) time 
+series.
+
+## 4a) Plot time series of spikes
+
+\fcolorbox{gray!40}{gray!40}{Rationale:} Before we do the Dickey-Fuller test for 
+the presence of a unit root in any of our time-varying variables, let's plot the
+time series for all 59 cells.^[See for intuition [**this article**](https://towardsdatascience.com/how-to-remove-non-stationarity-in-time-series-forecasting-563c05c4bfc7). (Tuychiev, Bex. "How to Remove Non-Stationarity in 
+Time Series Forecasting." *Towards Data Science*, Jul 2021.)] 
+The variable `Max_s` serves as our time variable in the regressions that 
+follow this section, so we will plot time series for the other four key vars 
+for all 59 cells. Visualizing the time series for each cell helps us: 
+
+* Check for drift or trend in the series of spikes for each cell
+* Visualize any series of cell spikes that fail to reject non-stationarity
+* See the number of spikes per cell, which may also contribute to failing the 
+unit root test.
+
+```{r Plot time series all cells, fig.height=1.2, fig.width=1.5, message=FALSE}
+
+## Our 4 time-varying vars
+the_vars
+## Reference df with 59 unique Cell IDs and number of spikes
+  df_unique <- df_short %>%
+    group_by(CellID, Cell.Type) %>%
+    summarise(n = n()) %>%
+    arrange(Cell.Type, CellID)
+  
+## Define a function to plot time series for all cells
+plot_timeseries <- function(df, feature, cell_id, cell_type, n) {
+  ggplot(df, aes(x = 1:nrow(df), y = eval(parse(text = feature)))) +
+    geom_point(size = 0.005) +
+    geom_line(linewidth = 0.03) +
+    labs(x = "Spike index", y = feature, 
+         title = paste("Var:", feature, 
+                       "\nCell ID:", cell_id,
+                       "\nGroup:", cell_type, 
+                       "\nNum Spikes:", n)) +
+    theme_minimal() +
+    theme(text = element_text(size = 3),
+          plot.title = element_text(size = 3))
+}
+
+## Plot time series for four key vars for all 59 cells
+for (var in the_vars) {
+  cat("  \n") 
+  print(paste("TIME SERIES PLOTS FOR", var))
+  
+  for(i in 1:nrow(df_unique)) {
+  ## Store this Cell's ID
+  this_CellID <- df_unique$CellID[i]
+  this_CellType <- df_unique$Cell.Type[i]
+  this_n <- df_unique$n[i]
+  ## Subset data for this Cell's ID
+  this_df <- df_short %>% filter(CellID == this_CellID)
+  ## Print plot of time series for log_Imax for this Cell
+  print(plot_timeseries(this_df, var,
+                        this_CellID, this_CellType, this_n))
+  }
+}
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][2cm][t]{16.2cm}
+
+Observations: Some cells display a time-varying trend in their time series for 
+some variables. We will need to include trend and drift terms in our model for
+the series of pikes from each cell, and in the unit root test.
+
+\end{minipage}}
+
+
+## 4b) Dickey-Fuller test for unit root
+
+We use the AR(1) model with trend and drift terms to model the within-cell
+measurements from each cell.^[The three types of unit root test with 
+corresponding models and hypotheses are discussed in [**this Stack Exchange post**](https://stats.stackexchange.com/questions/24072/interpreting-rs-ur-df-dickey-fuller-unit-root-test-results). (Townsley, Jeramy. "Interpreting R's 
+ur.df (Dickey-Fuller unit root test) results." *Cross Validated*, Feb 2015.)] 
+Our model will be
+
+\hl{$y_t = \beta_0 + \rho y_{t-1} + \beta_2t + u_t$} where:
+
+  * $y_t$ is the variable of interest at time index $t$
+  * $\rho$ is the autoregression coefficient
+  * $u_t$ is the error term (assumed IID)
+  * $\beta_0$ is the drift (intercept) term
+  * $\beta_2$ is the trend coefficient
+  * $t$ is the time variable
+  
+```{r Example time series - WT log_t12, fig.height=3, fig.width=5}
+
+## An example of why we need to include the trend term in the unit root test.
+## This is a WT cell that fails to reject non-stationarity for log_t12 without 
+## the trend term, but is significant (stationary) when trend is accounted for 
+## in the unit root test.
+this_df <- df_short %>% filter(CellID == "MT211001c5")
+plot_timeseries(this_df, "log_t12", "MT211001c5", "WT", 209)
+
+```
+
+Let's conduct the Dickey-Fuller test for the presence of a unit root in any 
+of our time-varying variables. We will use the version of the test with both 
+drift and trend terms. The unit root test is based on the estimable 
+regression model for AR(1), which can be re-written from above as
+$\Delta y_t = \beta_0 + (\rho - 1) y_{t-1} + \beta_2t + u_t$ where:
+
+  * $\Delta$ is the first difference operator, and
+  * we can set $\gamma = \rho - 1$
+
+We are testing the null hypothesis:
+
+  * $H_0: \gamma = 0 \iff \rho = 1$ (series has a unit root $\iff$ is 
+  non-stationary)
+  * $H_1: \gamma \neq 0 \iff \rho \neq 1$ 
+
+Note: When both drift and trend terms are included in the Dickey-Fuller unit 
+root test, there are three hypotheses being tested and so the test 
+returns three test statistics. The test statistic for our $H_0$ is the 
+first of these three.
+
+Below we write a loop that returns the the Dickey-Fuller unit root test 
+statistic and its significance level by `CellID` for all 59 cells. We make a 
+separate table of UR test statistics for each variable. Since `Max_s` is our
+time variable, exclude it from the unit root test (unsurprisingly
+it fails the UR test for all cells.)
+
+Note that the unit root test with drift and trend terms needs at least five
+degrees of freedom (three for the drift, trend, and $\rho$ terms and two to 
+perform a lag between $t$ and $t-1$) so we will not get a UR test statistic 
+for any cells with 6 or fewer observations (spikes).
+
+```{r Unit root test tables, message=FALSE}
+
+## Our 4 key time-varying vars
+the_vars
+## Make empty list to store output UR dataframes for each var
+ur_output_dfs <- sapply(the_vars, function(x) NULL)
+
+## Run a loop to do the unit root test with trend and drift, and print a 
+## UR test statistic table for 4 of the key vars excluding Max_s
+for (var in the_vars) {
+  
+  ## Initialize empty matrix for this variable
+  ur_df <- data.frame("Cell_ID" = character(nrow(df_unique)),
+                      "Group" = character(nrow(df_unique)),
+                      "Num_spikes" = numeric(nrow(df_unique)),
+                      "UR_test_stat" = numeric(nrow(df_unique)),
+                      "Sig_level" = character(nrow(df_unique)))
+  
+  for(i in 1:nrow(df_unique)) {
+    ## Store this Cell's ID
+    this_CellID <- df_unique$CellID[i]
+    ## Populate columns 1 and 2 with Cell ID and number of measurements
+    ur_df[i, 1] <- this_CellID
+    ur_df[i, 2] <- df_unique$Cell.Type[i]
+    ur_df[i, 3] <- df_unique$n[i]
+    
+    ## Unit root test needs >6 measurements to calculate the test statistic
+    if (df_unique$n[i] <= 6 ) {
+      ## Populate columns 3-6 with NA if cell has <= 6 spikes
+      ur_df[i, 4:5] <- NA
+    }
+    else {
+      ## Select rows for this Cell ID
+      this_df <- df_short %>% filter(CellID == this_CellID)
+      ## Do the unit root test
+      ur_out <- ur.df(y = this_df[[var]], type = "trend", lags = 1)
+      ## Populate column 3 with the UR test statistic. Extract the first
+      ## of the three test statistics because our H0 is tau3.
+      stat <- ur_out@teststat[1]
+      ur_df[i, 4] <- round(stat, 2)
+      ## Populate column 4 with significance level of the UR test statistic
+      cvals <- ur_out@cval[1, ]
+      ## Loop through critical values to check significance
+      if (stat < cvals[1]) {
+        ur_df[i, 5] <- "Sig at 0.10"
+      } else {
+        if (stat < cvals[2]) {
+          ur_df[i, 5] <- "Sig at 0.05"
+        } else {
+          if (stat < cvals[3]) {
+            ur_df[i, 5] <- "Sig at 0.01"
+          } else {
+            ur_df[i, 5] <- "Cannot reject H0"
+          }
+        }
+      }
+    }
+  }
+  
+  ## Print the UR test statistic table with one row per cell
+  cat("  \n") 
+  cat("  \n") 
+  print(paste("TABLE OF UNIT ROOT TEST STATISTICS FOR", var))
+  cat("  \n") 
+  print(ur_df)
+
+  ## Print a summary table
+  cat("  \n") 
+  print(paste("SUMMARY OF STATIONARY CELLS FOR", var))
+  cat("  \n") 
+  ## Get number of cells in each group that reject the UR null
+  ur_summary_table <- ur_df %>%
+  filter(Sig_level != "Cannot reject H0") %>%
+  group_by(Group) %>%
+  summarise(num_cells = n(),
+            num_spikes = sum(Num_spikes))
+  ## Print the summary table with number of stationary cells per group
+  print(ur_summary_table)
+  ## Store the unit root table for this var in the output list
+  ur_output_dfs[[var]] <- ur_df
+}
+
+
+```
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][2cm][t]{16.2cm}
+
+Observations: We see that in all four variables, one-half to two-thirds of the
+cells have stationary distributions. We can use these stationary cells for
+all further analysis. Let's estimate $\widetilde{y_t}$ of each variable for
+the stationary cells.
+
+\end{minipage}}
+
+# 5) Difference-of-means tests on $\widetilde{y_t}$ for stationary cells
+
+For the stationary variable $y_t$, the component $u_t$ is independent of 
+$u_{t-1}$. Therefore, if we can estimate $u_t$, we can get an estimate of the 
+variation in $y_t$ which is independent from one spike to the next. **We should** 
+**use only the cells for whom $y_t$ is actually stationary (i.e., for whom** 
+**$H_0: \rho = 1$ was rejected by the unit root test in the previous section).**
+
+For each of our four time-varying variables $y=$ [`log_Imax`, `log_t12`, 
+`log_Q`, `Wait_time`], we will carry out the following steps:
+
+1. Estimate $u_t$ separately for the K189 cells, the K326 cells and the WT cells
+that have stationary series for variable $y$. Do this by fitting the following 
+lag-1 regression model with cell fixed-effects and interaction terms
+\hl{$y_{t, c} = \beta_0{_c} + \rho y_{t-1, c} + \beta_2 t_{t, c} + u_{t, c}$} 
+where:
+
+  * $\beta_0{_c}$ is the fixed-effect for Cell $c$
+  * $y_{t,c}$ is our variable of interest for Spike $t$ from Cell $c$
+  * $y_{t-1,c}$ is our variable of interest for Spike $t-1$ from Cell $c$
+  * $t_{t,c}$ is the time variable `Max_s` for Spike $t$ from Cell $c$
+  * $u_{t,c}$ is the error term for Spike $t$ from Cell $c$
+
+Our estimate for $u_{t, c}$ is the residual for Spike $t$ from Cell $c$ from 
+the linear regression.
+
+2. The mean of $\widehat{u}_{t, c}$ is by definition zero. Adding the mean of 
+$y_c$ (the fixed-effect of the variable of interest for Cell $c$) back to 
+$\widehat{u}_{t, c}$ allows us test for difference of treatment and control 
+means. \textcolor{blue}{We call this estimate $\tilde{y}_{t,c}$, an estimate of} 
+\textcolor{blue}{$y_{t,c}$ which, unlike the original variable, is independent} 
+\textcolor{blue}{for all spikes:}
+\hl{$\tilde{y}_{t,c} = \widehat{u}_{t, c} + \bar{y_c}$}.
+
+3. Test for difference of means of $\tilde{y}_{t,c}$ between (1) WT and K189 
+cells and (2) WT and K326 cells. 
+
+\fcolorbox{gray!20}{gray!20}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{black!90}
+\begin{minipage}[c][2.4cm][t]{16.2cm}
+
+For example: Theoretically, if {\bf Wait\_time} was stationary for all cells 
+in the data, this method would restore all degrees of freedom lost in the ANOVA 
+using only cell fixed effects in Section 5b. 
+
+\medskip
+We can only estimate $\widetilde{Wait\_time}_{t,c}$ for the 23/59 cells 
+for whom {\bf Wait\_time} has a stationary process. This gives us 1269 degrees 
+of freedom for ANOVA of WT vs K189, and 1625 degrees of freedom for ANOVA of WT 
+vs. K326.
+
+\end{minipage}}
+
+## 5a) For `Wait_time`
+
+We write a function that does steps 1-2 above for each variable. Apply this
+function to `Wait_time`. Then we perform t-tests for difference of means 
+on $\tilde{y}_{t,c}$ for `Wait_time` between (1) WT and K189 cells and 
+(2) WT and K326 cells. 
+
+```{r Estimating u_t FOR WAIT_TIME for all three groups}
+
+lag1_reg_func <- function(var) {
+  
+  ## Save data frame of UR statistics for each cell for this variable
+  ur_df_this_var <- ur_output_dfs[[var]] 
+  
+  ## Print number of cells with stationary series for this var
+  cat("  \n") 
+  print(paste("SUMMARY OF CELLS WITH STATIONARY", var))
+    
+  stationary_table <- ur_df_this_var %>%
+    filter(Sig_level != "Cannot reject H0") %>%
+    group_by(Group) %>%
+    summarise(num_cells = n(), num_spikes = sum(Num_spikes))
+  print(stationary_table)
+  
+  groups <- c("K189", "K326", "WT")
+  st_df_list <- setNames(replicate(3, list()), groups)
+  ## For each of the three groups K189, K326 and WT: fit the lag-1 regression
+  ## for this var on each group separately, and estimate u_t with the residuals 
+  ## of this regression
+  for (group in groups) {
+  
+    ## Print a label
+    cat("  \n") 
+    print(paste("LAG-1 REGRESSION OF", var, "FOR GROUP", group))
+    
+    ## Get Cell IDs of cells in this group with stationary series for this var
+    st_CellIDs_thisgroup <- 
+      ur_df_this_var$Cell_ID[ur_df_this_var$Group == group 
+                             & ur_df_this_var$Sig_level %in% c("Sig at 0.01", 
+                                                               "Sig at 0.05", 
+                                                               "Sig at 0.10")]
+    ## Print a label
+    print(paste(length(st_CellIDs_thisgroup), group, 
+                "CELLS HAVE STATIONARY", var))
+    
+    ## Subset of df_short with the stationary cells for this var in this group 
+    this_subset_df <- df_short %>%
+      group_by(CellID) %>%
+      arrange(CellID, Max_s) %>%
+      ## Create lag-1 version of this variable
+      mutate(l1_var = Lag(eval(parse(text = var)), + 1)) %>%
+      filter(CellID %in% st_CellIDs_thisgroup)
+    
+    ## Fit the lag-1 regression for the stationary Wait_time cells in this group
+    this_reg <- 
+      lm(eval(parse(text = var)) ~ l1_var*factor(CellID) + Max_s*factor(CellID), 
+         data = this_subset_df, 
+         na.action = na.exclude)
+    ## Print the regression
+    print(summary(this_reg))
+    
+    ## Add residuals and y_hat to the stationary subset data frame for this group
+    this_subset_df <- cbind(this_subset_df, 
+                            resid = resid(this_reg), 
+                            fitted = fitted(this_reg)) %>%
+      group_by(CellID) %>%
+      ## Check that the sum of residuals for each cell is ~zero
+      mutate(sum_resid = sum(resid, na.rm = TRUE))
+    
+    ## Show that the residuals (u_t hat) have lower variance than y_t
+    print(paste("VARIANCE OF", var, "(y_t) FOR", group, "=",
+                round(var(this_subset_df[, var]), 3)))
+    print(paste("VARIANCE OF RESIDUALS (u_t) FOR", group, "=",
+                round(var(this_subset_df$resid, na.rm = TRUE), 3)))
+    cat("  \n")
+    cat("  \n")
+    
+    ## Save the stationary Wait_time subset data frame for this group
+    st_df_list[[group]] <- this_subset_df
+  }
+  assign("st_df_list", st_df_list, envir = .GlobalEnv)
+}
+
+```
+
+### 5a.1) Fit `Wait_time` lag-1 regression for stationary cells by group
+
+Apply our function to fit the lag-1 regression of $Wait\_time_{t, c}$ on 
+$Wait\_time_{t-1, c}$ for all three groups separately. The residuals from this 
+regression are our estimate $\widehat{u}_{t, c}$.
+```{r}
+lag1_reg_func("Wait_time")
+```
+
+### 5a.2) Estimate $\widetilde{Wait\_time}_{t,c}$ for stationary cells
+
+```{r estimate y_tilde for Wait_time}
+
+df_st_wait <- rbind(st_df_list$K189, st_df_list$K326, st_df_list$WT) %>%
+  select(CellID, Cell.Type, nspikes, Max_s, Wait_time, resid) %>%
+  group_by(CellID) %>%
+  mutate(mean_Wait_time = mean(Wait_time),
+         y_tilde = resid + mean_Wait_time)
+```
+
+### 5a.3) Test difference-of-means using $\widetilde{Wait\_time}_{t,c}$
+
+```{r}
+## Get Cell IDs for (1) WT versus K189 and (2) WT versus K326
+## for only the cells that have stationary wait_time
+WT_and_K189 <- which(df_st_wait$Cell.Type %in% c("WT", "K189"))
+WT_and_K326 <- which(df_st_wait$Cell.Type %in% c("WT", "K326"))
+```
+
+Test for difference of means of $\widetilde{Wait\_time}_{t,c}$ of
+(1) WT versus K189 and (2) WT versus K326. We use only the cells with stationary
+`Wait_time`. Note: we do a t-test for difference of means here rather than an 
+ANOVA. The t-test has a more conservative $H_0$, so rejecting equality of group
+means in the t-test gives a much stronger conclusion than rejecting equality
+of cell means in ANOVA.
+
+```{r t-test of y_tilde for Wait_time}
+
+## Difference-of-means test for WT vs. K189
+t.test(y_tilde[WT_and_K189] ~ Cell.Type[WT_and_K189], data = df_st_wait)
+## Difference-of-means test for WT vs. K326
+t.test(y_tilde[WT_and_K326] ~ Cell.Type[WT_and_K326], data = df_st_wait)
+
+## CHECK: Compare group mean, variance and number of spikes of original variable 
+## for these stationary cells to those of y_tilde. They should be similar, 
+## indicating that y_tilde (our independent version of y_t) is not very 
+## different from y_t in terms of mean and variance. Number of spikes for 
+## y_tilde is very close to the original var. We have not lost many degrees
+## of freedom in using y_tilde.
+table <- df_st_wait %>%
+  group_by(Cell.Type) %>%
+  mutate(notmiss = ifelse(is.na(y_tilde), 0, 1)) %>%
+  summarise('Mean(Wait_time)' = round(mean(Wait_time), 3),
+            'SD(Wait_time)' = round(sd(Wait_time), 3),
+            'Spikes Wait_time' = n(),
+            'Mean(y_tilde)' = round(mean(y_tilde, na.rm  = T), 3),
+            'SD(y_tilde)' = round(sd(y_tilde, na.rm = T),3),
+            'Spikes y_tilde' = sum(notmiss))
+
+knitr::kable(table, caption = "Group mean and variance of $y_t$ versus 
+             $ytilde_t$ for cells with stationary `Wait_time`", 'pandoc')
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][2cm][t]{16.2cm}
+
+Observations: Whereas the our ANOVA of cell fixed-effects in Section 5b could 
+not reject the equality of means between WT and either treatment for 
+$\bf wait\_time$, this updated ANOVA using $\widetilde{wait\_time}_{t,c}$ and 
+approximately 1200 dfs from 15 cells finds a significant difference in mean 
+$\bf wait\_time$ between WT and K326 cells at the 1\% level.
+
+\end{minipage}}
+
+
+------------------
+
+## 5b) For `log_t12`
+
+### 5b.1) Fit `log_t12` lag-1 regression for stationary cells by group
+
+```{r Estimating u_t FOR LOG_T12 for all three groups}
+lag1_reg_func("log_t12")
+```
+
+### 5b.2) Estimate $\widetilde{log\_t12}_{t,c}$ for stationary cells
+
+```{r estimate y_tilde for log_t12}
+
+df_st_logt12 <- rbind(st_df_list$K189, st_df_list$K326, st_df_list$WT) %>%
+  select(CellID, Cell.Type, nspikes, Max_s, log_t12, resid) %>%
+  group_by(CellID) %>%
+  mutate(mean_log_t12 = mean(log_t12),
+         y_tilde = resid + mean_log_t12)
+```
+
+### 5b.3) Test difference-of-means using $\widetilde{log\_t12}_{t,c}$
+
+```{r}
+## Get Cell IDs for (1) WT versus K189 and (2) WT versus K326
+WT_and_K189 <- which(df_st_logt12$Cell.Type %in% c("WT", "K189"))
+WT_and_K326 <- which(df_st_logt12$Cell.Type %in% c("WT", "K326"))
+```
+
+Test for difference of means of $\widetilde{log\_t12}_{t,c}$ of
+(1) WT versus K189 and (2) WT versus K326. We use only the cells with stationary
+`log_t12`. Note: we do a t-test for difference of means here rather than an 
+ANOVA for a stronger conclusion.
+
+```{r t-test of y_tilde for log_t12}
+
+## Difference-of-means test for WT vs. K189
+t.test(y_tilde[WT_and_K189] ~ Cell.Type[WT_and_K189], data = df_st_logt12)
+## Difference-of-means test for WT vs. K326
+t.test(y_tilde[WT_and_K326] ~ Cell.Type[WT_and_K326], data = df_st_logt12)
+
+## CHECK: Compare group mean, variance and number of spikes of original variable 
+## for these stationary cells to those of y_tilde. They should be similar.
+table <- df_st_logt12 %>%
+  group_by(Cell.Type) %>%
+  mutate(notmiss = ifelse(is.na(y_tilde), 0, 1)) %>%
+  summarise('Mean(log_t12)' = round(mean(log_t12), 3),
+            'SD(log_t12)' = round(sd(log_t12), 3),
+            'Spikes log_t12' = n(),
+            'Mean(y_tilde)' = round(mean(y_tilde, na.rm  = T), 3),
+            'SD(y_tilde)' = round(sd(y_tilde, na.rm = T),3),
+            'Spikes y_tilde' = sum(notmiss))
+
+knitr::kable(table, caption = "Group mean and variance of $y_t$ versus 
+             $ytilde_t$ for cells with stationary `log_t12`", 'pandoc')
+```
+
+\textcolor{blue}{Observations: REJECTS EQUALITY OF MEANS FOR BOTH TREATMENTS.} 
+
+## 5c) For `log_Imax`
+
+### 5c.1) Fit `log_Imax` lag-1 regression for stationary cells by group
+
+```{r}
+lag1_reg_func("log_Imax")
+```
+
+
+### 5c.2) Estimate $\widetilde{log\_Imax}_{t,c}$ for stationary cells
+
+```{r}
+df_st_logImax <- rbind(st_df_list$K189, st_df_list$K326, st_df_list$WT) %>%
+  select(CellID, Cell.Type, nspikes, Max_s, log_Imax, resid) %>%
+  group_by(CellID) %>%
+  mutate(mean_log_Imax = mean(log_Imax),
+         y_tilde = resid + mean_log_Imax)
+```
+
+### 5c.3) Test difference-of-means using $\widetilde{log\_Imax}_{t,c}$
+
+```{r t-test of y_tilde for log_Imax}
+
+## Get Cell IDs for (1) WT versus K189 and (2) WT versus K326
+WT_and_K189 <- which(df_st_logImax$Cell.Type %in% c("WT", "K189"))
+WT_and_K326 <- which(df_st_logImax$Cell.Type %in% c("WT", "K326"))
+
+## Difference-of-means test for WT vs. K189
+t.test(y_tilde[WT_and_K189] ~ Cell.Type[WT_and_K189], data = df_st_logImax)
+## Difference-of-means test for WT vs. K326
+t.test(y_tilde[WT_and_K326] ~ Cell.Type[WT_and_K326], data = df_st_logImax)
+
+## CHECK: Compare group mean, variance and number of spikes of original variable 
+## for these stationary cells to those of y_tilde. They should be similar.
+table <- df_st_logImax %>%
+  group_by(Cell.Type) %>%
+  mutate(notmiss = ifelse(is.na(y_tilde), 0, 1)) %>%
+  summarise('Mean(log_Imax)' = round(mean(log_Imax), 3),
+            'SD(log_Imax)' = round(sd(log_Imax), 3),
+            'Spikes log_Imax' = n(),
+            'Mean(y_tilde)' = round(mean(y_tilde, na.rm  = T), 3),
+            'SD(y_tilde)' = round(sd(y_tilde, na.rm = T),3),
+            'Spikes y_tilde' = sum(notmiss))
+
+knitr::kable(table, caption = "Group mean and variance of $y_t$ versus 
+             $ytilde_t$ for cells with stationary `log_Imax`", 'pandoc')
+```
+
+\textcolor{blue}{Observations: REJECTS EQUALITY OF MEANS FOR BOTH TREATMENTS.} 
+
+## 5d) For `log_Q`
+
+### 5d.1) Fit `log_Q` lag-1 regression for stationary cells by group
+
+```{r}
+lag1_reg_func("log_Q")
+```
+
+
+### 5d.2) Estimate $\widetilde{log\_Q}_{t,c}$ for stationary cells
+
+```{r}
+df_st_logQ <- rbind(st_df_list$K189, st_df_list$K326, st_df_list$WT) %>%
+  select(CellID, Cell.Type, nspikes, Max_s, log_Q, resid) %>%
+  group_by(CellID) %>%
+  mutate(mean_log_Q = mean(log_Q),
+         y_tilde = resid + mean_log_Q)
+```
+
+### 5c.3) Test difference-of-means using $\widetilde{log\_Q}_{t,c}$
+
+```{r t-test of y_tilde for log_Q}
+
+## Get Cell IDs for (1) WT versus K189 and (2) WT versus K326
+WT_and_K189 <- which(df_st_logQ$Cell.Type %in% c("WT", "K189"))
+WT_and_K326 <- which(df_st_logQ$Cell.Type %in% c("WT", "K326"))
+
+## Difference-of-means test for WT vs. K189
+t.test(y_tilde[WT_and_K189] ~ Cell.Type[WT_and_K189], data = df_st_logQ)
+## Difference-of-means test for WT vs. K326
+t.test(y_tilde[WT_and_K326] ~ Cell.Type[WT_and_K326], data = df_st_logQ)
+
+## CHECK: Compare group mean, variance and number of spikes of original variable 
+## for these stationary cells to those of y_tilde. They should be similar.
+table <- df_st_logQ %>%
+  group_by(Cell.Type) %>%
+  mutate(notmiss = ifelse(is.na(y_tilde), 0, 1)) %>%
+  summarise('Mean(log_Q)' = round(mean(log_Q), 3),
+            'SD(log_Q)' = round(sd(log_Q), 3),
+            'Spikes log_Q' = n(),
+            'Mean(y_tilde)' = round(mean(y_tilde, na.rm  = T), 3),
+            'SD(y_tilde)' = round(sd(y_tilde, na.rm = T),3),
+            'Spikes y_tilde' = sum(notmiss))
+
+knitr::kable(table, caption = "Group mean and variance of $y_t$ versus 
+             $ytilde_t$ for cells with stationary `log_Q`", 'pandoc')
+```
+
+\textcolor{blue}{Observations: REJECTS EQUALITY OF MEANS FOR BOTH TREATMENTS.} 
+
+# 6) Regressions with $\widetilde{y_t}$ for stationary cells
+
+```{r Make df_stationary_all}
+
+## First make data set of just the stationary cells for all variables, and 
+## the y_tilde version of the variable. Use inner join to do this, merging
+## each variable's stationary data set into our original df_short and keeping
+## only the rows that match from both sets. We want the intersection of 
+## cells that are stationary for all variables to run our regression.
+
+by_keys <- c("CellID", "Max_s", "Cell.Type", "nspikes")
+df_st_all <- df_short %>%
+  ## Inner join stationary Wait_time
+  inner_join(df_st_wait, by = c(by_keys, "Wait_time")) %>%
+  select(-c(resid, mean_Wait_time)) %>%
+  rename(ytilde_wait = y_tilde) %>%
+  ##  Inner join stationary log_t12
+  inner_join(df_st_logt12, by = c(by_keys, "log_t12")) %>%
+  select(-c(resid, mean_log_t12)) %>%
+  rename(ytilde_logt12 = y_tilde) %>%
+  ##  Inner join stationary log_Imax
+  inner_join(df_st_logImax, by = c(by_keys, "log_Imax")) %>%
+  select(-c(resid, mean_log_Imax)) %>%
+  rename(ytilde_logImax = y_tilde) %>%
+  ##  Inner join stationary log_Q
+  inner_join(df_st_logQ, by = c(by_keys, "log_Q")) %>%
+  select(-c(resid, mean_log_Q)) %>%
+  rename(ytilde_logQ = y_tilde)
+
+## Check how many (stationary across all 4 vars!) cells in each group we have
+df_st_all %>%
+  group_by(CellID, Cell.Type) %>%
+  summarise(n = n()) %>%
+  arrange(Cell.Type)
+
+## What fraction of the total data/total spikes is stationary?
+nrow(df_st_all) / nrow(df_short) 
+## What fraction of the total cells are responsible for the stationary data?
+18/59
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1.5cm][t]{16.2cm}
+
+About $\frac{2}{3}$ (61\%) of the total data (that is, total spikes) in this 
+data set are stationary! They are produced by about $\frac{1}{3}$ (31\%) 
+of the cells. So all following regressions in Section 6 and 7 are performed
+on the intersection of cells with the stationary 61\% of the data.
+
+\end{minipage}}
+
+## 6a) Average Treatment Effects
+
+The regressions in this section are a robustness check for the estimates
+of Average Treatment Effect on each $\widetilde{y_t}$ variable. Models
+are performed on the intersection of cells in the data which are stationary
+for all variables in the model. 
+
+For all regressions that follow, we use robust standard errors. We did not
+cluster errors by `CellID` because with few `CellID`s, clustered errors can
+overstate standard errors. An alternative is to put more structure on the 
+error covariance to account for serial correlation in the errors between nearby 
+spikes. One way to impose structured covariance for time series data like ours
+is to use GARCH. We can explore this in future research to improve standard
+error estimates in our models. We use the stargazer package with the 
+`starprep` option fed to the `se` argument, which gives comparable robust 
+standard error estimates to those produced by `estimatr`'s function `lm_robust`.
+
+```{r Reg setups}
+## Set WT as factor level 1 in Cell Type
+df_st_all$Cell.Type <- as.factor(df_st_all$Cell.Type)
+df_st_all$Cell.Type <- relevel(df_st_all$Cell.Type, "WT")
+levels(df_st_all$Cell.Type)
+```
+
+### 6a.1) Dependent var: $\widetilde{Wait\_time}_t$
+
+```{r Average treatment effect on ytilde_wait_time}
+## Dependent var is ytilde_Wait_time
+lm1 <- lm(ytilde_wait ~ Cell.Type + ytilde_logt12, data = df_st_all)
+lm2 <- lm(ytilde_wait ~ Cell.Type + ytilde_logImax, data = df_st_all)
+lm3 <- lm(ytilde_wait ~ Cell.Type + ytilde_logQ, data = df_st_all)
+lm4 <- lm(ytilde_wait ~ Cell.Type + ytilde_logt12 + ytilde_logQ + ytilde_logImax, 
+           data = df_st_all)
+```
+
+
+```{r ATE reg table on ytilde_wait_time, echo=FALSE, results='asis'}
+## Regression table
+stargazer(lm1, lm2, lm3, lm4, 
+          se = starprep(lm1, lm2, lm3, lm4),
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "$\\widetilde{Wait\\_time_t}$",
+          covariate.labels = c("Cell Type = K189",
+                               "Cell Type = K326",
+                               "$\\widetilde{log\\_t12_t}$",
+                               "$\\widetilde{log\\_Imax_t}$",
+                               "$\\widetilde{log\\_Q_t}$"),
+          title = "Robustness check for estimate of Average Treatment Effect
+          on $\\widetilde{Wait\\_time_t}$",
+          notes = c("Regressions are performed on the intersection of cells in 
+                    the data that", "are stationary for all variables in the 
+                    model. Robust standard errors are used."))
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1 cm][t]{16.2cm}
+
+The estimate of Average Treatment Effect (ATE) on $\widetilde{Wait\_time}$ for
+stationary cells is robust to subsets of regressors. The estimate of ATE is
+statistically significant for K326 over the baseline (WT).
+
+\end{minipage}}
+ 
+
+### 6a.2) Dependent var: $\widetilde{log\_t12}_t$
+
+```{r Average treatment effect on ytilde_logt12}
+
+## Dependent var is ytilde_log_t12
+lm1 <- lm(ytilde_logt12 ~ Cell.Type + ytilde_wait, data = df_st_all)
+lm2 <- lm(ytilde_logt12 ~ Cell.Type + ytilde_logImax, data = df_st_all)
+lm3 <- lm(ytilde_logt12 ~ Cell.Type + ytilde_logQ, data = df_st_all)
+lm4 <- lm(ytilde_logt12 ~ Cell.Type + ytilde_wait + ytilde_logQ + ytilde_logImax, 
+           data = df_st_all)
+```
+
+```{r ATE reg table on ytilde_logt12, echo=FALSE, results='asis'}
+## Regression table
+stargazer(lm1, lm2, lm3, lm4, 
+          se = starprep(lm1, lm2, lm3, lm4),
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "$\\widetilde{log\\_t12_t}$",
+          covariate.labels = c("Cell Type = K189",
+                               "Cell Type = K326",
+                               "$\\widetilde{Wait\\_time_t}$",
+                               "$\\widetilde{log\\_Imax_t}$",
+                               "$\\widetilde{log\\_Q_t}$"),
+          title = "Robustness check for estimate of Average Treatment Effect
+          on $\\widetilde{log\\_t12_t}$",
+          notes = c("Regressions are performed on the intersection of cells in 
+                    the data that", "are stationary for all variables in the 
+                    model. Robust standard errors are used."))
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1 cm][t]{16.2cm}
+
+The estimate of Average Treatment Effect (ATE) on $\widetilde{log\_t12}$ for
+stationary cells is robust to subsets of regressors. The estimate of ATE is
+statistically significant for both K326 and K189 over the baseline (WT).
+
+\end{minipage}}
+
+
+### 6a.3) Dependent var: $\widetilde{log\_Imax}_t$
+
+```{r Average treatment effect on ytilde_log_Imax}
+
+## Dependent var is ytilde_log_Imax
+lm1 <- lm(ytilde_logImax ~ Cell.Type + ytilde_wait, data = df_st_all)
+lm2 <- lm(ytilde_logImax ~ Cell.Type + ytilde_logt12, data = df_st_all)
+lm3 <- lm(ytilde_logImax ~ Cell.Type + ytilde_logQ, data = df_st_all)
+lm4 <- lm(ytilde_logImax ~ Cell.Type + ytilde_wait + ytilde_logt12 + ytilde_logQ, 
+           data = df_st_all)
+```
+
+```{r ATE reg table on ytilde_log_Imax, echo=FALSE, results='asis'}
+## Regression table
+stargazer(lm1, lm2, lm3, lm4, 
+          se = starprep(lm1, lm2, lm3, lm4),
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "$\\widetilde{log\\_Imax_t}$",
+          covariate.labels = c("Cell Type = K189",
+                               "Cell Type = K326",
+                               "$\\widetilde{Wait\\_time_t}$",
+                               "$\\widetilde{log\\_t12_t}$",
+                               "$\\widetilde{log\\_Q_t}$"),
+          title = "Robustness check for estimate of Average Treatment Effect
+          on $\\widetilde{log\\_Imax_t}$",
+          notes = c("Regressions are performed on the intersection of cells in 
+                    the data that", "are stationary for all variables in the 
+                    model. Robust standard errors are used."))
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1 cm][t]{16.2cm}
+
+The estimate of Average Treatment Effect (ATE) on $\widetilde{log\_Imax}$ for
+stationary cells is robust to subsets of regressors. The 
+estimate of ATE is statistically significant for both K326 and K189 over 
+the baseline (WT).
+
+\end{minipage}}
+
+
+### 6a.4) Dependent var: $\widetilde{log\_Q}_t$
+
+```{r Average treatment effect on ytilde_log_Q}
+
+## Dependent var is ytilde_log_Q
+lm1 <- lm(ytilde_logQ ~ Cell.Type + ytilde_wait, data = df_st_all)
+lm2 <- lm(ytilde_logQ ~ Cell.Type + ytilde_logt12, data = df_st_all)
+lm3 <- lm(ytilde_logQ ~ Cell.Type + ytilde_logImax, data = df_st_all)
+lm4 <- lm(ytilde_logQ ~ Cell.Type + ytilde_wait + ytilde_logt12 + ytilde_logImax, 
+           data = df_st_all)
+```
+
+```{r ATE reg table on ytilde_log_Q, echo=FALSE, results='asis'}
+## Regression table
+stargazer(lm1, lm2, lm3, lm4, 
+          se = starprep(lm1, lm2, lm3, lm4),
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "$\\widetilde{log\\_Q_t}$",
+          covariate.labels = c("Cell Type = K189",
+                               "Cell Type = K326",
+                               "$\\widetilde{Wait\\_time_t}$",
+                               "$\\widetilde{log\\_t12_t}$",
+                               "$\\widetilde{log\\_Imax_t}$"),
+          title = "Robustness check for estimate of Average Treatment Effect
+          on $\\widetilde{log\\_Q_t}$",
+          notes = c("Regressions are performed on the intersection of cells in 
+                    the data that", "are stationary for all variables in the 
+                    model. Robust standard errors are used."))
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1 cm][t]{16.2cm}
+
+The estimate of Average Treatment Effect (ATE) on $\widetilde{log\_Q}$ for
+K189 stationary cells is NOT robust to subsets of regressors. The 
+estimate of ATE flips signs depending on which covariates are included in the
+model, and so the estimate range of Average Treatment Effect contains zero
+for both K189 and K326.
+
+\end{minipage}}
+
+
+## 6b) Variable Interaction Effects
+
+The tables in this section present difference-in-differences estimates, that is,
+the interaction effects among variables. In formal terms, this is the cross-
+partial derivative $\frac{\partial^2 y}{\partial x_1 \partial x_2}$, where:
+
+* $y$ is an outcome, for example $\widetilde{log\_t12}$
+* $x1$ is another variable from the experiment, for example 
+$\widetilde{log\_Imax}$
+* $x2$ is the treatment indicator `Cell.Type`
+
+The difference-in-differences between WT and K326 in Table 12, Model 2 is 
+interpreted as the difference between:
+
+1. the change in $\widetilde{log\_t12}$ associated with a one-unit change in 
+$\widetilde{log\_Imax}$ (that is, the percentage change in `t12` 
+due to a 100% change in `Imax`) for WT cells, and
+
+2. the change in $\widetilde{log\_t12}$ associated with a one-unit change in 
+$\widetilde{log\_Imax}$ for K326 cells.
+
+### 6b.1) Dependent var: $\widetilde{Wait\_time}_t$
+
+```{r Interactions on ytilde_wait}
+
+## Dependent var is ytilde_wait_time
+lm1 <- lm(ytilde_wait ~ Cell.Type*ytilde_logt12, data = df_st_all)
+lm2 <- lm(ytilde_wait ~ Cell.Type*ytilde_logImax, data = df_st_all)
+lm3 <- lm(ytilde_wait ~ Cell.Type*ytilde_logQ, data = df_st_all)
+```
+
+
+```{r Interactions reg table on ytilde_wait_time, results='asis'}
+## Regression table
+stargazer(lm1, lm2, lm3, 
+          se = starprep(lm1, lm2, lm3),
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "$\\widetilde{Wait\\_time_t}$",
+          add.lines = list(c("Cell Type FE", "Yes", "Yes", "Yes"),
+                           c("Control Var", 
+                             "$\\widetilde{log\\_t12_t}$", 
+                             "$\\widetilde{log\\_Imax_t}$",
+                             "$\\widetilde{log\\_Q_t}$")),
+          keep = c("Cell.TypeK189:ytilde_logt12", 
+                   "Cell.TypeK326:ytilde_logt12",
+                   "Cell.TypeK189:ytilde_logImax", 
+                   "Cell.TypeK326:ytilde_logImax",
+                   "Cell.TypeK189:ytilde_logQ", 
+                   "Cell.TypeK326:ytilde_logQ"),
+          covariate.labels = c("Cell Type (=K189) x $\\widetilde{log\\_t12_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_t12_t}$",
+                               "Cell Type (=K189) x $\\widetilde{log\\_Imax_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_Imax_t}$",
+                               "Cell Type (=K189) x $\\widetilde{log\\_Q_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_Q_t}$"),
+          title = "Difference-in-differences: $\\widetilde{Wait\\_time_t}$",
+          notes = c("Statistical significance is based on robust 
+                    standard errors."))
+```
+
+### 6b.2) Dependent var: $\widetilde{log\_t12}_t$
+
+```{r Interactions on ytilde_logt12}
+
+## Dependent var is ytilde_log_t12
+lm1 <- lm(ytilde_logt12 ~ Cell.Type*ytilde_wait, data = df_st_all)
+lm2 <- lm(ytilde_logt12 ~ Cell.Type*ytilde_logImax, data = df_st_all)
+lm3 <- lm(ytilde_logt12 ~ Cell.Type*ytilde_logQ, data = df_st_all)
+```
+
+```{r Interactions reg table on ytilde_log_t12, results='asis'}
+## Regression table
+stargazer(lm1, lm2, lm3, 
+          se = starprep(lm1, lm2, lm3),
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "$\\widetilde{log\\_t12_t}$",
+          add.lines = list(c('Cell Type FE', 'Yes', 'Yes', 'Yes'),
+                           c("Control Var", 
+                             "$\\widetilde{Wait\\_time_t}$", 
+                             "$\\widetilde{log\\_Imax_t}$",
+                             "$\\widetilde{log\\_Q_t}$")),
+           keep = c("Cell.TypeK189:ytilde_wait", 
+                   "Cell.TypeK326:ytilde_wait",
+                   "Cell.TypeK189:ytilde_logImax", 
+                   "Cell.TypeK326:ytilde_logImax",
+                   "Cell.TypeK189:ytilde_logQ", 
+                   "Cell.TypeK326:ytilde_logQ"),
+          covariate.labels = c("Cell Type (=K189) x $\\widetilde{Wait\\_time_t}$",
+                               "Cell Type (=K326) x $\\widetilde{Wait\\_time_t}$",
+                               "Cell Type (=K189) x $\\widetilde{log\\_Imax_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_Imax_t}$",
+                               "Cell Type (=K189) x $\\widetilde{log\\_Q_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_Q_t}$"),
+          title = "Difference-in-differences: $\\widetilde{log\\_t12_t}$",
+          notes = c("Statistical significance is based on robust 
+                    standard errors."))
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][2cm][t]{16.2cm}
+
+All three difference-in-differences (DiD) in Appendix Table 12 are 
+statistically significant for K326 stationary cells at the 1\% level. For 
+example, the change in `t12` associated with a 100\% change in 
+`Imax` is 23.5\% less for K326 cells than for WT cells. The change in 
+`t12` associated with a 100\% change in `Q` is 14.0\% less for K326 cells 
+than for WT cells. It appears that the K326 treatment is more robust across all
+DiDs than is the K189 treatment.
+
+\end{minipage}}
+
+
+### 6b.3) Dependent var: $\widetilde{log\_Imax}_t$
+
+```{r Interactions on ytilde_logImax}
+
+## Dependent var is ytilde_log_Imax
+lm1 <- lm(ytilde_logImax ~ Cell.Type*ytilde_wait, data = df_st_all)
+lm2 <- lm(ytilde_logImax ~ Cell.Type*ytilde_logt12, data = df_st_all)
+lm3 <- lm(ytilde_logImax ~ Cell.Type*ytilde_logQ, data = df_st_all)
+```
+
+```{r Interactions reg table on ytilde_logImax, results='asis'}
+## Regression table
+stargazer(lm1, lm2, lm3, 
+          se = starprep(lm1, lm2, lm3),
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "$\\widetilde{log\\_Imax_t}$",
+          add.lines = list(c('Cell Type FE', 'Yes', 'Yes', 'Yes'),
+                           c("Control Var", 
+                             "$\\widetilde{Wait\\_time_t}$", 
+                             "$\\widetilde{log\\_t12_t}$",
+                             "$\\widetilde{log\\_Q_t}$")),
+          keep = c("Cell.TypeK189:ytilde_wait", 
+                   "Cell.TypeK326:ytilde_wait",
+                   "Cell.TypeK189:ytilde_logt12", 
+                   "Cell.TypeK326:ytilde_logt12",
+                   "Cell.TypeK189:ytilde_logQ", 
+                   "Cell.TypeK326:ytilde_logQ"),
+          covariate.labels = c("Cell Type (=K189) x $\\widetilde{Wait\\_time_t}$",
+                               "Cell Type (=K326) x $\\widetilde{Wait\\_time_t}$",
+                               "Cell Type (=K189) x $\\widetilde{log\\_t12_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_t12_t}$",
+                               "Cell Type (=K189) x $\\widetilde{log\\_Q_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_Q_t}$"),
+          title = "Difference-in-differences: $\\widetilde{log\\_Imax_t}$",
+          notes = c("Statistical significance is based on robust 
+                    standard errors."))
+```
+
+### 6b.4) Dependent var: $\widetilde{log\_Q}_t$
+
+```{r Interactions on ytilde_logQ}
+
+## Dependent var is ytilde_logQ
+lm1 <- lm(ytilde_logQ ~ Cell.Type*ytilde_wait, data = df_st_all)
+lm2 <- lm(ytilde_logQ ~ Cell.Type*ytilde_logt12, data = df_st_all)
+lm3 <- lm(ytilde_logQ ~ Cell.Type*ytilde_logImax, data = df_st_all)
+```
+
+```{r Interactions reg table on ytilde_logQ, results = 'asis'}
+
+## Regression table
+stargazer(lm1, lm2, lm3, 
+          se = starprep(lm1, lm2, lm3),
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "$\\widetilde{log\\_Q_t}$",
+          add.lines = list(c('Cell Type FE', 'Yes', 'Yes', 'Yes'),
+                           c("Control Var", 
+                             "$\\widetilde{Wait\\_time_t}$", 
+                             "$\\widetilde{log\\_t12_t}$",
+                             "$\\widetilde{log\\_Imax_t}$")),
+          keep = c("Cell.TypeK189:ytilde_wait", 
+                   "Cell.TypeK326:ytilde_wait",
+                   "Cell.TypeK189:ytilde_logt12", 
+                   "Cell.TypeK326:ytilde_logt12",
+                   "Cell.TypeK189:ytilde_logImax", 
+                   "Cell.TypeK326:ytilde_logImax"),
+          covariate.labels = c("Cell Type (=K189) x $\\widetilde{Wait\\_time_t}$",
+                               "Cell Type (=K326) x $\\widetilde{Wait\\_time_t}$",
+                               "Cell Type (=K189) x $\\widetilde{log\\_t12_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_t12_t}$",
+                               "Cell Type (=K189) x $\\widetilde{log\\_Imax_t}$",
+                               "Cell Type (=K326) x $\\widetilde{log\\_Imax_t}$"),
+          title = "Difference-in-differences: $\\widetilde{log\\_Q_t}$",
+         notes = c("Statistical significance is based on robust 
+                    standard errors."))
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1cm][t]{16.2cm}
+
+What we observe in Table 13 above, is borne out in Tables 14 and 15 for 
+outcome variables `Imax` and `Q`, respectively.
+
+\end{minipage}}
+
+# 7) Logistic regression for classification
+
+```{r Prep class_df for logistic reg}
+
+class_df <- data.frame(df_st_all[, c("CellID", "Cell.Type",
+                                     "ytilde_wait", "ytilde_logt12", 
+                                     "ytilde_logImax", "ytilde_logQ", "Max_s")])
+## Drop ~ 25 rows with NA values
+class_df <- na.omit(class_df)
+
+## Scale the numeric columns
+class_df[, -c(1,2)] <- scale(class_df[, -c(1,2)])
+
+## Make separate classification data frames for K189 and K326
+class_df_K189 <- class_df[class_df$Cell.Type != "K326", -1]
+class_df_K326 <- class_df[class_df$Cell.Type != "K189", -1]
+
+## Re-level the labels to only have 2 factor levels
+class_df_K189$Cell.Type <- as.character(class_df_K189$Cell.Type)
+class_df_K326$Cell.Type <- as.character(class_df_K326$Cell.Type)
+## Relevel not working, doing it manually
+class_df_K189$Cell.Type <- as.factor(class_df_K189$Cell.Type)
+levels(class_df_K189$Cell.Type)
+class_df_K326$Cell.Type <- as.factor(class_df_K326$Cell.Type)
+levels(class_df_K326$Cell.Type)
+
+## We will want the LOOCV estimate of test error
+train_ctrl <- trainControl(method = "LOOCV")
+
+```
+
+## 7a) For WT vs. K189 stationary cells
+
+```{r Logistic reg model for K189 vs WT}
+## Fit and evaluate the logistic reg model for K189 vs WT
+set.seed(625)
+glm_K189_noCV <- glm(Cell.Type ~ ., 
+                     data = class_df_K189, 
+                     family = "binomial")
+glm_K189 <- train(Cell.Type ~ ., 
+                  data = class_df_K189,
+                  trControl = train_ctrl,
+                  method = "glm",
+                  family = "binomial")
+## Prep output to stargazer
+glm_K189$finalModel$call <- glm_K189_noCV$call
+
+## Show test accuracy and Kappa
+#glm_K189$results
+glm_K189
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1 cm][t]{16.2cm}
+
+The logistic regression model for WT vs. K189 classifies cell type for 
+stationary cells with 72\% test accuracy, given the features in this 
+data set. Nice.
+
+\end{minipage}}
+
+## 7b) For WT vs. K326 stationary cells
+
+```{r Logistic reg model for K326 vs WT}
+## Fit and evaluate the logistic reg model for K326 vs WT
+set.seed(625)
+glm_K326_noCV <- glm(Cell.Type ~ ., 
+                     data = class_df_K326, 
+                     family = "binomial")
+glm_K326 <- train(Cell.Type ~ ., 
+                  data = class_df_K326,
+                  trControl = train_ctrl,
+                  method = "glm",
+                  family = "binomial")
+## Prep output to stargazer
+glm_K326$finalModel$call <- glm_K326_noCV$call
+
+## Show test accuracy and Kappa
+#glm_K326$results
+glm_K326
+```
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][1cm][t]{16.2cm}
+
+The logistic regression model for WT vs. K326 classifies cell type for 
+stationary cells with 71\% test accuracy, given the features in this data
+set. Nice.
+
+\end{minipage}}
+
+## 7c) Statistically significant features
+
+```{r Logistic reg table, results = 'asis'}
+## Output regression table to stargazer
+stargazer(glm_K189$finalModel, glm_K326$finalModel,
+          type = "latex", font.size = "scriptsize", header = FALSE,
+          dep.var.labels = "Cell Type",
+          column.labels = c("WT vs. K189", 
+                             "WT vs. K326"),
+          title = "Coefficient estimates of logistic regression model
+          for classification",
+          notes = c("Regressions are performed on the intersection of cells in", 
+                    "the data that are stationary for all variables in the 
+                    model."))
+```
+
+
+\fcolorbox{white}{white}{
+\sffamily\fboxrule.2em\fboxsep2em
+\color{blue}
+\begin{minipage}[c][3.5cm][t]{16.2cm}
+
+The features $\widetilde{log\_t12}$, $\widetilde{log\_Imax}$, and 
+$\widetilde{log\_Q}$ are statistically significant for the logistic
+regression model classifying between K189 and WT stationary cells in this
+data set.
+
+\medskip
+All four variables are statistically significant for the logistic
+regression model classifying between K326 and WT stationary cells in this
+data set.
+
+\medskip
+From the test accuracy of the models we can see that these variables provide 
+a lot of information about the fundamental difference between WT and treatment
+stationary cells in this data set.
+
+\end{minipage}}
+
+```{r}
+## EOF
+```
+
+-------
