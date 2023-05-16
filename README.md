@@ -25,3 +25,6 @@ Data from a Randomized Experiment: Differentiating Cells with Time-Varying Chara
 ![FINAL REPORT_page-0033](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/e772202d-08fa-4a2e-a1e6-717269d96a20)
 ![FINAL REPORT_page-0034](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/5a3ae32d-2598-49b1-b2d0-d647bee6af81)
 ![FINAL REPORT_page-0035](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/fc6fe785-d320-4189-b96f-96f41fbc23e1)
+
+--------------------
+Appendix
