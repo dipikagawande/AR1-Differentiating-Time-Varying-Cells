@@ -1,5 +1,5 @@
 # AR1-Time-Varying-Cells
-### Data from a Randomized Experiment: Differentiating Cells with Time-Varying Characteristics
+### Data from a randomized experiment: Differentiating cells with time-varying characteristics using an AR-1 time series model
 
 --------------
 ### Report
