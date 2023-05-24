@@ -3,7 +3,7 @@
 
 --------------
 ### Report
-I wrote the entire final report and all code in the Appendix and Results section for dataset 7a.
+I wrote the entire final report (pdf below) and all code in the Appendix and Results section for dataset 7a (all spikes, long stimulation).
 
 ![FINAL REPORT_page-0001](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/7a26c8ca-af89-4181-aa4a-83c59739aa70)
 ![FINAL REPORT_page-0002](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/1fdcd460-45f7-4324-a9c3-01c8fc1f5ec9)
