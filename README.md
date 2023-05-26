@@ -5,7 +5,7 @@
 ### Report
 I wrote the entire body of the final report (pdf below) and all code in the Appendix and Results section for dataset 7a (all spikes, long stimulation), which served as backbone code for the data in sections 7b, 7c and 7d.
 
-![FINAL REPORT_page-0001](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/7a26c8ca-af89-4181-aa4a-83c59739aa70)
+![FINAL REPORT_page-0001](https://github.com/dipikagawande/AR1-Time-Varying-Cells/assets/36409429/6fbce604-8c5f-466e-b1b7-9f5996b6f928)
 ![FINAL REPORT_page-0002](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/1fdcd460-45f7-4324-a9c3-01c8fc1f5ec9)
 ![FINAL REPORT_page-0003](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/d7f3ee9b-0e48-4e6a-85ed-fbb73789f25b)
 ![FINAL REPORT_page-0004](https://github.com/dipikagawande/Time-Varying-Cells/assets/36409429/40b24ce6-dec0-4eea-93ce-32bb6497c784)
